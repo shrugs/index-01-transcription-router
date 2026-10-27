@@ -1,0 +1,21 @@
+{
+  "name": "transcription-router",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --env-file .env --port 8787",
+    "tunnel": "cloudflared tunnel --url http://localhost:8787",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "effect": "4.0.0",
+    "effect-cf": "0.53.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261004.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.152.0"
+  }
+}

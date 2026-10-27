@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "transcription-router",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "vars": {
+    // Where transcripts are forwarded, e.g. a Hermes webhook route.
+    "FORWARD_WEBHOOK_URL": "https://hermes.example.com/webhooks/transcription"
+  }
+  // Secrets: OPENROUTER_API_KEY, WEBHOOK_SIGNING_SECRET (the Index app's webhook secret), FORWARD_WEBHOOK_SECRET (the
+  // receiver's secret, e.g. the Hermes route's) (`wrangler secret put`; in dev, from .env).
+}

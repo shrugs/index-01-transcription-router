@@ -4,18 +4,22 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --env-file .env --port 8787",
+    "dev": "bun --bun --env-file=.env alchemy dev",
     "tunnel": "cloudflared tunnel --url http://localhost:8787",
-    "deploy": "wrangler deploy",
+    "deploy": "bun --bun --env-file=.env alchemy deploy --stage prod",
+    "logs": "bun --bun --env-file=.env alchemy logs --stage prod --tail",
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
-    "effect": "4.0.0",
+    "effect": "4.0.6",
     "effect-cf": "0.53.0"
   },
   "devDependencies": {
+    "@alchemy.run/cloudflare": "2.0.0-beta.84",
     "@cloudflare/workers-types": "5.20261004.1",
-    "typescript": "5.9.3",
-    "wrangler": "4.152.0"
+    "@effect/platform-bun": "4.0.6",
+    "@effect/platform-node": "4.0.6",
+    "alchemy": "2.0.0-beta.84",
+    "typescript": "5.9.3"
   }
 }

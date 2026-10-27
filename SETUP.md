@@ -11,7 +11,7 @@ Read `src/index.ts` and `src/webhook.ts`. The flow is: verify the Index signatur
 Ask the user what they want done with each recording. If they run Hermes, the default (forward to a Hermes webhook route) already works. Otherwise, edit the block to do what they describe and keep these rules:
 
 - Every failure has to fail the effect, so the handler answers 502 and the Index app retries.
-- New config goes in `wrangler.jsonc` `vars`, new secrets go in `src/env.d.ts` and get set with `wrangler secret put`, and new bindings (D1, KV, R2, AI) go in `wrangler.jsonc`.
+- The Worker and everything it binds to are declared in `alchemy.run.ts`. New config goes in the Worker's `env` as a plain string. New secrets go there as `Config.Redacted("NAME")`, which reads `NAME` from `.env`. New resources (D1, KV, R2, AI) are declared in the stack and passed in through `env`. Every new name also goes in `src/env.d.ts`.
 - If they don't use the forwarding webhook, delete `forward` and its vars and secrets rather than leaving them unused.
 
 Run `bun run typecheck` until it passes.
@@ -19,22 +19,21 @@ Run `bun run typecheck` until it passes.
 ## 3. Prerequisites
 
 - Bun (version in `.tool-versions`), then `bun install`.
-- A Cloudflare account: `bunx wrangler login`. If the user has several accounts, add `account_id` to `wrangler.jsonc`.
+- A Cloudflare account, signed in to Alchemy: have the user run `bunx alchemy profile edit --add Cloudflare`, which signs in through the browser. If it reports that no profile exists, run `bunx alchemy profile create default` first. For CI, set `CLOUDFLARE_API_TOKEN` and `CI=1` instead.
 - An OpenRouter API key from https://openrouter.ai/keys (unless you switched transcription to Workers AI).
-- If forwarding to Hermes: a webhook route on their Hermes gateway that's reachable from the internet (a Cloudflare Tunnel works), and that route's secret. Set `FORWARD_WEBHOOK_URL` in `wrangler.jsonc` to the route's URL. The JSON body has `transcript`, `recorded_at` (ISO time), `trigger` (the ring gesture) and `delivery` (unique per recording), which the route's prompt can reference.
+- If forwarding to Hermes: a webhook route on their Hermes gateway that's reachable from the internet (a Cloudflare Tunnel works), and that route's secret. Set `FORWARD_WEBHOOK_URL` in `alchemy.run.ts` to the route's URL. The JSON body has `transcript`, `recorded_at` (ISO time), `trigger` (the ring gesture) and `delivery` (unique per recording), which the route's prompt can reference.
 
 ## 4. Secrets and deploy
 
-Generate the Index signing secret with `openssl rand -hex 32`, and show it to the user, since they'll paste it into the app. Then:
+Generate the Index signing secret with `openssl rand -hex 32`, and show it to the user, since they'll paste it into the app. Put every secret in `.env` (gitignored):
 
 ```sh
-bunx wrangler secret put WEBHOOK_SIGNING_SECRET
-bunx wrangler secret put OPENROUTER_API_KEY
-bunx wrangler secret put FORWARD_WEBHOOK_SECRET
-bun run deploy
+WEBHOOK_SIGNING_SECRET=...
+OPENROUTER_API_KEY=...
+FORWARD_WEBHOOK_SECRET=...
 ```
 
-Note the `*.workers.dev` URL that deploy prints.
+Then run `bun run deploy`, which uploads the Worker along with the secrets from `.env`. Note the `*.workers.dev` URL it prints. Deploy state lives in `.alchemy/` (gitignored), so later deploys should run from the same machine.
 
 ## 5. Connect the Index app
 
@@ -47,8 +46,8 @@ Have the user open the Index webhook settings in the app, then:
 
 ## 6. Verify end to end
 
-Run `bunx wrangler tail` while the user records something with the ring. Confirm the `webhook`, `transcript` and (if forwarding) `forwarded` log lines appear, and confirm with the user that the result arrived where they wanted it. A 401 means the secret doesn't match or the phone's clock is off by more than five minutes. A 502 shows which step failed in the log.
+Run `bun run logs` while the user records something with the ring. Confirm the `webhook`, `transcript` and (if forwarding) `forwarded` log lines appear, and confirm with the user that the result arrived where they wanted it. A 401 means the secret doesn't match or the phone's clock is off by more than five minutes. A 502 shows which step failed in the log.
 
 ## Local development
 
-Put the same secrets in `.env` (gitignored), then run `bun run dev` and `bun run tunnel`, and point the Index app's webhook at the tunnel URL.
+Run `bun run dev`, which serves the Worker on port 8787 with the secrets from `.env`, and `bun run tunnel`, then point the Index app's webhook at the tunnel URL.

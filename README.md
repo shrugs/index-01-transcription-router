@@ -9,7 +9,7 @@ A Cloudflare Worker that receives the [Index 01](https://github.com/coredevices/
 - Forwards `{ transcript, recorded_at, trigger, delivery }`, signed in Hermes's V2 webhook scheme. Any receiver that checks an HMAC can take it.
 - Answers 502 when a step fails, so the Index app retries the delivery.
 
-Built with [Effect](https://effect.website) and [effect-cf](https://www.npmjs.com/package/effect-cf) on Cloudflare Workers.
+Built with [Effect](https://effect.website) and [effect-cf](https://www.npmjs.com/package/effect-cf) on Cloudflare Workers, deployed with [Alchemy](https://alchemy.run).
 
 ## Make it yours
 

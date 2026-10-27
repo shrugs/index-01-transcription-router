@@ -5,7 +5,7 @@ import { Worker, WorkerEnvironment } from "effect-cf"
 import { NoRecording, parse, verifySignature } from "./webhook.ts"
 
 // Any OpenAI-compatible transcription model on OpenRouter. This could equally be Cloudflare's own Workers AI speech-to-
-// text (`@cf/openai/whisper-large-v3-turbo`): add an `ai` binding to wrangler.jsonc and call `env.AI.run(...)` with the
+// text (`@cf/openai/whisper-large-v3-turbo`): add an `ai` binding to alchemy.run.ts and call `env.AI.run(...)` with the
 // recording's base64 audio instead of fetching OpenRouter, which drops the OPENROUTER_API_KEY secret.
 const MODEL = "openai/whisper-large-v3-turbo"
 
@@ -118,7 +118,7 @@ const handle = Effect.gen(function* () {
   // - Forward to several places at once: run the legs with `Effect.all({ a, b }, { concurrency: "unbounded",
   //   mode: "result" })` so one failing doesn't stop the others, then answer 502 if any failed.
   // - Post to a chat: a Slack or Discord incoming webhook is one `fetch` with `{ text: transcript }`.
-  // - Keep a journal: append to a D1 table, a KV key per day or an R2 object (add the binding to wrangler.jsonc), or
+  // - Keep a journal: append to a D1 table, a KV key per day or an R2 object (add the binding to alchemy.run.ts), or
   //   create a page/task in Notion, Todoist, Linear or GitHub Issues through their APIs.
   // - Post-process first: summarize, title or extract to-dos with an LLM (OpenRouter's chat completions with the same
   //   key, or Workers AI) and send that along with the raw transcript.

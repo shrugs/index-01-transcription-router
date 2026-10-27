@@ -1,12 +1,14 @@
 // One endpoint: a signed webhook carrying an Index 01 recording → a transcript → whatever you do with it (by default,
 // a signed webhook to Hermes, which acts on it in the background).
 import { Effect, Layer, Schema } from "effect"
+import { Hex } from "effect/encoding"
 import { Worker, WorkerEnvironment } from "effect-cf"
 import { NoRecording, parse, verifySignature } from "./webhook.ts"
 
 // Any OpenAI-compatible transcription model on OpenRouter. This could equally be Cloudflare's own Workers AI speech-to-
-// text (`@cf/openai/whisper-large-v3-turbo`): add an `ai` binding to alchemy.run.ts and call `env.AI.run(...)` with the
-// recording's base64 audio instead of fetching OpenRouter, which drops the OPENROUTER_API_KEY secret.
+// text (`@cf/openai/whisper-large-v3-turbo`): add an `ai` binding to alchemy.run.ts and run the model on the recording
+// (`env.AI.run(...)`, or effect-cf's `WorkersAi`) instead of fetching OpenRouter, which drops the OPENROUTER_API_KEY
+// secret.
 const MODEL = "openai/whisper-large-v3-turbo"
 
 class TranscriptionFailed extends Schema.TaggedError<TranscriptionFailed>()("TranscriptionFailed", {
@@ -17,13 +19,15 @@ const transcribe = Effect.fn("transcribe")(function* (apiKey: string, file: File
   const form = new FormData()
   form.append("model", MODEL)
   form.append("file", file)
-  const response = yield* Effect.promise(() =>
-    fetch("https://openrouter.ai/api/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { authorization: `Bearer ${apiKey}` },
-      body: form
-    })
-  )
+  const response = yield* Effect.tryPromise({
+    try: () =>
+      fetch("https://openrouter.ai/api/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { authorization: `Bearer ${apiKey}` },
+        body: form
+      }),
+    catch: (error) => new TranscriptionFailed({ message: String(error) })
+  })
   if (!response.ok) {
     const detail = yield* Effect.promise(() => response.text())
     return yield* new TranscriptionFailed({ message: `${response.status}: ${detail}` })
@@ -40,8 +44,7 @@ const hmacHex = (secret: string, data: string) =>
     const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
       "sign"
     ])
-    const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(data)))
-    return Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("")
+    return Hex.encode(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(data))))
   })
 
 /**
@@ -56,14 +59,14 @@ const forward = Effect.fn("forward")(function* (
 ) {
   const body = JSON.stringify({
     transcript: event.transcript,
-    recorded_at: event.recordedAt?.toISOString() ?? "an unknown time",
-    trigger: event.trigger ?? "unknown gesture",
+    recorded_at: event.recordedAt?.toISOString() ?? null,
+    trigger: event.trigger,
     delivery: event.delivery
   })
   const timestamp = String(Math.floor(Date.now() / 1000))
   const signature = yield* hmacHex(env.FORWARD_WEBHOOK_SECRET, `${timestamp}.${body}`)
   const response = yield* Effect.tryPromise({
-    try: (signal) =>
+    try: () =>
       fetch(env.FORWARD_WEBHOOK_URL, {
         method: "POST",
         headers: {
@@ -73,15 +76,10 @@ const forward = Effect.fn("forward")(function* (
           ...(event.delivery ? { "x-request-id": event.delivery } : {})
         },
         body,
-        signal
+        signal: AbortSignal.timeout(20_000)
       }),
     catch: (error) => new ForwardFailed({ message: String(error) })
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: "20 seconds",
-      orElse: () => Effect.fail(new ForwardFailed({ message: "no answer within 20 s" }))
-    })
-  )
+  })
   const reply = yield* Effect.promise(() => response.text())
   if (!response.ok) return yield* new ForwardFailed({ message: `${response.status}: ${reply}`.slice(0, 2000) })
   yield* Effect.log("forwarded", reply)
@@ -93,18 +91,16 @@ const handle = Effect.gen(function* () {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 })
 
   const body = new Uint8Array(yield* Effect.promise(() => request.arrayBuffer()))
-  yield* Effect.log("webhook", {
-    trigger: request.headers.get("x-index-trigger"),
-    delivery: request.headers.get("x-index-delivery"),
-    bytes: body.byteLength
-  })
+  const trigger = request.headers.get("x-index-trigger")
+  const delivery = request.headers.get("x-index-delivery")
+  yield* Effect.log("webhook", { trigger, delivery, bytes: body.byteLength })
 
   yield* verifySignature(env.WEBHOOK_SIGNING_SECRET, request.headers, body)
-  const { test, audio: file, recordedAt } = yield* parse(request.headers.get("content-type") ?? "", body)
+  const { test, audio, recordedAt } = yield* parse(request.headers.get("content-type") ?? "", body)
   if (test) return Response.json({ ok: true, test: true })
-  if (!file) return yield* new NoRecording({ message: "no audio field; set the webhook to send the recording" })
-  yield* Effect.log("transcribing", { name: file.name, type: file.type, bytes: file.size })
-  const transcript = yield* transcribe(env.OPENROUTER_API_KEY, file)
+  if (!audio) return yield* new NoRecording({ message: "no audio field; set the webhook to send the recording" })
+  yield* Effect.log("transcribing", { name: audio.name, type: audio.type, bytes: audio.size })
+  const transcript = yield* transcribe(env.OPENROUTER_API_KEY, audio)
   yield* Effect.log("transcript", transcript)
 
   // ── What happens to the transcript ───────────────────────────────────────────────────────────────────────────────
@@ -122,13 +118,8 @@ const handle = Effect.gen(function* () {
   //   create a page/task in Notion, Todoist, Linear or GitHub Issues through their APIs.
   // - Post-process first: summarize, title or extract to-dos with an LLM (OpenRouter's chat completions with the same
   //   key, or Workers AI) and send that along with the raw transcript.
-  // - Keep the audio: put `file` in R2 next to its transcript.
-  yield* forward(env, {
-    transcript,
-    recordedAt,
-    trigger: request.headers.get("x-index-trigger"),
-    delivery: request.headers.get("x-index-delivery")
-  })
+  // - Keep the audio: put `audio` in R2 next to its transcript.
+  yield* forward(env, { transcript, recordedAt, trigger, delivery })
   // ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
   return Response.json({ ok: true, characters: transcript.length })
@@ -136,10 +127,10 @@ const handle = Effect.gen(function* () {
   Effect.tapError(Effect.logWarning),
   Effect.catchTags({
     InvalidSignature: (error) => Effect.succeed(new Response(error.message, { status: 401 })),
-    NoRecording: (error) => Effect.succeed(new Response(error.message, { status: 422 })),
-    TranscriptionFailed: (error) => Effect.succeed(new Response(error.message, { status: 502 })),
-    ForwardFailed: (error) => Effect.succeed(new Response(error.message, { status: 502 }))
+    NoRecording: (error) => Effect.succeed(new Response(error.message, { status: 422 }))
   }),
+  // Every other failure (transcription, delivery) answers 502, so the Index app retries.
+  Effect.catch((error) => Effect.succeed(new Response(error.message, { status: 502 }))),
   Effect.tapCause(Effect.logError)
 )
 

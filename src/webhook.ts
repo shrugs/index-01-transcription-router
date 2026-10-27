@@ -1,6 +1,7 @@
 // The Index 01 webhook (protocol v1): its HMAC-SHA256 signature, and the recording it carries.
 // https://github.com/coredevices/mobileapp/blob/main/experimental/src/commonMain/kotlin/coredevices/ring/external/indexwebhook/INDEX_WEBHOOK_API.md
-import { Effect, Schema } from "effect"
+import { Effect, Result, Schema } from "effect"
+import { Hex } from "effect/encoding"
 
 export class InvalidSignature extends Schema.TaggedError<InvalidSignature>()("InvalidSignature", {
   message: Schema.String
@@ -9,8 +10,6 @@ export class InvalidSignature extends Schema.TaggedError<InvalidSignature>()("In
 export class NoRecording extends Schema.TaggedError<NoRecording>()("NoRecording", { message: Schema.String }) {}
 
 const MAX_SKEW_SECONDS = 5 * 60
-
-const hex = (value: string) => Uint8Array.from(value.match(/../g) ?? [], (byte) => Number.parseInt(byte, 16))
 
 /**
  * Checks `X-Index-Signature`: lowercase hex HMAC-SHA256(secret, "v1\n" + timestamp + "\n" + delivery + "\n" + trigger
@@ -30,22 +29,18 @@ export const verifySignature = Effect.fn("verifySignature")(function* (
     return yield* new InvalidSignature({ message: "timestamp outside the allowed window" })
   }
 
-  const prefix = new TextEncoder().encode(
-    `v${version}\n${timestamp}\n${headers.get("x-index-delivery") ?? ""}\n${headers.get("x-index-trigger") ?? ""}\n${headers.get("x-index-test") === "true" ? "1" : "0"}\n`
-  )
-  const signed = new Uint8Array(prefix.byteLength + body.byteLength)
-  signed.set(prefix)
-  signed.set(body, prefix.byteLength)
+  const delivery = headers.get("x-index-delivery") ?? ""
+  const trigger = headers.get("x-index-trigger") ?? ""
+  const test = headers.get("x-index-test") === "true" ? "1" : "0"
+  const prefix = `v1\n${timestamp}\n${delivery}\n${trigger}\n${test}\n`
 
   const valid = yield* Effect.promise(async () => {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["verify"]
-    )
-    return crypto.subtle.verify("HMAC", key, hex(signature), signed)
+    const encoder = new TextEncoder()
+    const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+      "verify"
+    ])
+    const signed = await new Blob([encoder.encode(prefix), body]).arrayBuffer()
+    return crypto.subtle.verify("HMAC", key, Result.getOrThrow(Hex.decode(signature)), signed)
   })
   if (!valid) return yield* new InvalidSignature({ message: "signature does not match" })
 })

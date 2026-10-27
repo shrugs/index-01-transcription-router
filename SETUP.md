@@ -11,7 +11,7 @@ Read `src/index.ts` and `src/webhook.ts`. The flow is: verify the Index signatur
 Ask the user what they want done with each recording. If they run Hermes, the default (forward to a Hermes webhook route) already works. Otherwise, edit the block to do what they describe and keep these rules:
 
 - Every failure has to fail the effect, so the handler answers 502 and the Index app retries.
-- The Worker and everything it binds to are declared in `alchemy.run.ts`. New config goes in the Worker's `env` as a plain string. New secrets go there as `Config.Redacted("NAME")`, which reads `NAME` from `.env`. New resources (D1, KV, R2, AI) are declared in the stack and passed in through `env`. Every new name also goes in `src/env.d.ts`.
+- The Worker and everything it binds to are declared in `alchemy.run.ts`, and `Cloudflare.Env` is typed from it. New config goes in the Worker's `env` as a plain string. New secrets go there as `Config.Redacted("NAME")`, which reads `NAME` from `.env`. For a new resource (D1, KV, R2, AI), wrap the Worker in `Effect.gen`, `yield*` the resource, and pass it in `env`.
 - If they don't use the forwarding webhook, delete `forward` and its vars and secrets rather than leaving them unused.
 
 Run `bun run typecheck` until it passes.

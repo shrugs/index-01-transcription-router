@@ -1,13 +1,14 @@
 // One endpoint: a signed webhook carrying an Index 01 recording → a transcript → whatever you do with it (by default,
 // a signed webhook to Hermes, which acts on it in the background).
-import { Effect, Layer, Schema } from "effect"
+import { Clock, Effect, Schema } from "effect"
 import { Hex } from "effect/encoding"
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpIncomingMessage } from "effect/http"
 import { Worker, WorkerEnvironment } from "effect-cf"
 import { NoRecording, parse, verifySignature } from "./webhook.ts"
 
 // Any OpenAI-compatible transcription model on OpenRouter. This could equally be Cloudflare's own Workers AI speech-to-
 // text (`@cf/openai/whisper-large-v3-turbo`): add an `ai` binding to alchemy.run.ts and run the model on the recording
-// (`env.AI.run(...)`, or effect-cf's `WorkersAi`) instead of fetching OpenRouter, which drops the OPENROUTER_API_KEY
+// (`env.AI.run(...)`, or effect-cf's `WorkersAi`) instead of calling OpenRouter, which drops the OPENROUTER_API_KEY
 // secret.
 const MODEL = "openai/whisper-large-v3-turbo"
 
@@ -15,24 +16,21 @@ class TranscriptionFailed extends Schema.TaggedError<TranscriptionFailed>()("Tra
   message: Schema.String
 }) {}
 
+const Transcription = Schema.Struct({ text: Schema.String })
+
 const transcribe = Effect.fn("transcribe")(function* (apiKey: string, file: File) {
   const form = new FormData()
   form.append("model", MODEL)
   form.append("file", file)
-  const response = yield* Effect.tryPromise({
-    try: () =>
-      fetch("https://openrouter.ai/api/v1/audio/transcriptions", {
-        method: "POST",
-        headers: { authorization: `Bearer ${apiKey}` },
-        body: form
-      }),
-    catch: (error) => new TranscriptionFailed({ message: String(error) })
-  })
-  if (!response.ok) {
-    const detail = yield* Effect.promise(() => response.text())
-    return yield* new TranscriptionFailed({ message: `${response.status}: ${detail}` })
+  const response = yield* HttpClientRequest.post("https://openrouter.ai/api/v1/audio/transcriptions").pipe(
+    HttpClientRequest.bearerToken(apiKey),
+    HttpClientRequest.bodyFormData(form),
+    HttpClient.execute
+  )
+  if (response.status >= 400) {
+    return yield* new TranscriptionFailed({ message: `${response.status}: ${yield* response.text}` })
   }
-  const { text } = yield* Effect.promise(() => response.json<{ text: string }>())
+  const { text } = yield* HttpIncomingMessage.schemaBodyJson(Transcription)(response)
   return text
 })
 
@@ -63,25 +61,22 @@ const forward = Effect.fn("forward")(function* (
     trigger: event.trigger,
     delivery: event.delivery
   })
-  const timestamp = String(Math.floor(Date.now() / 1000))
+  const timestamp = String(Math.floor((yield* Clock.currentTimeMillis) / 1000))
   const signature = yield* hmacHex(env.FORWARD_WEBHOOK_SECRET, `${timestamp}.${body}`)
-  const response = yield* Effect.tryPromise({
-    try: () =>
-      fetch(env.FORWARD_WEBHOOK_URL, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-webhook-timestamp": timestamp,
-          "x-webhook-signature-v2": signature,
-          ...(event.delivery ? { "x-request-id": event.delivery } : {})
-        },
-        body,
-        signal: AbortSignal.timeout(20_000)
-      }),
-    catch: (error) => new ForwardFailed({ message: String(error) })
-  })
-  const reply = yield* Effect.promise(() => response.text())
-  if (!response.ok) return yield* new ForwardFailed({ message: `${response.status}: ${reply}`.slice(0, 2000) })
+  const response = yield* HttpClientRequest.post(env.FORWARD_WEBHOOK_URL).pipe(
+    HttpClientRequest.setHeaders({
+      "x-webhook-timestamp": timestamp,
+      "x-webhook-signature-v2": signature,
+      ...(event.delivery ? { "x-request-id": event.delivery } : {})
+    }),
+    HttpClientRequest.bodyText(body, "application/json"),
+    HttpClient.execute,
+    Effect.timeout("20 seconds")
+  )
+  const reply = yield* response.text
+  if (response.status >= 400) {
+    return yield* new ForwardFailed({ message: `${response.status}: ${reply}`.slice(0, 2000) })
+  }
   yield* Effect.log("forwarded", reply)
 })
 
@@ -113,7 +108,7 @@ const handle = Effect.gen(function* () {
   //   destination for everything else.
   // - Forward to several places at once: run the legs with `Effect.all({ a, b }, { concurrency: "unbounded",
   //   mode: "result" })` so one failing doesn't stop the others, then answer 502 if any failed.
-  // - Post to a chat: a Slack or Discord incoming webhook is one `fetch` with `{ text: transcript }`.
+  // - Post to a chat: a Slack or Discord incoming webhook is one `HttpClientRequest.post` with `{ text: transcript }`.
   // - Keep a journal: append to a D1 table, a KV key per day or an R2 object (add the binding to alchemy.run.ts), or
   //   create a page/task in Notion, Todoist, Linear or GitHub Issues through their APIs.
   // - Post-process first: summarize, title or extract to-dos with an LLM (OpenRouter's chat completions with the same
@@ -134,4 +129,4 @@ const handle = Effect.gen(function* () {
   Effect.tapCause(Effect.logError)
 )
 
-export default Worker.makeFetchHandler(Layer.empty, { fetch: handle })
+export default Worker.makeFetchHandler(FetchHttpClient.layer, { fetch: handle })

@@ -1,6 +1,6 @@
 // The Index 01 webhook (protocol v1): its HMAC-SHA256 signature, and the recording it carries.
 // https://github.com/coredevices/mobileapp/blob/main/experimental/src/commonMain/kotlin/coredevices/ring/external/indexwebhook/INDEX_WEBHOOK_API.md
-import { Effect, Result, Schema } from "effect"
+import { Clock, Effect, Result, Schema } from "effect"
 import { Hex } from "effect/encoding"
 
 export class InvalidSignature extends Schema.TaggedError<InvalidSignature>()("InvalidSignature", {
@@ -25,7 +25,8 @@ export const verifySignature = Effect.fn("verifySignature")(function* (
   const timestamp = headers.get("x-index-timestamp") ?? ""
   if (version !== "1") return yield* new InvalidSignature({ message: `unsupported webhook version ${version}` })
   if (!/^[0-9a-f]{64}$/.test(signature)) return yield* new InvalidSignature({ message: "missing signature" })
-  if (!/^\d+$/.test(timestamp) || Math.abs(Date.now() / 1000 - Number(timestamp)) > MAX_SKEW_SECONDS) {
+  const now = (yield* Clock.currentTimeMillis) / 1000
+  if (!/^\d+$/.test(timestamp) || Math.abs(now - Number(timestamp)) > MAX_SKEW_SECONDS) {
     return yield* new InvalidSignature({ message: "timestamp outside the allowed window" })
   }
 

@@ -2,9 +2,7 @@
 
 A Cloudflare Worker that receives the [Index 01](https://github.com/coredevices/mobileapp/blob/main/experimental/src/commonMain/kotlin/coredevices/ring/external/indexwebhook/INDEX_WEBHOOK_API.md) ring's webhook, transcribes the recording with Whisper, and does something with the text. Out of the box it forwards the transcript as a signed webhook to [Hermes](https://github.com/NousResearch/hermes-agent), which acts on it in the background.
 
-```
-Index 01 ── signed webhook (M4A) ──▶ Worker ── verify ─▶ Whisper (OpenRouter) ─▶ your code ─▶ Hermes / anything
-```
+![Index 01 ring → Pebble app → Cloudflare Worker → Hermes, or anything you want](architecture.svg)
 
 - Checks the Index HMAC signature and timestamp, and answers test events.
 - Transcribes with `openai/whisper-large-v3-turbo` on OpenRouter. Swapping in Workers AI's Whisper is a few lines.
